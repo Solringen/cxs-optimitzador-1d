@@ -104,7 +104,7 @@
 </head>
 <body>
 
-<div class="version">v.202606211940</div>
+<div class="version">v.202606211952</div>
 
 <div class="container">
 
@@ -120,8 +120,9 @@
             <option value="mm">Mil·límetres (mm)</option>
         </select>
 
-        <label for="stockSizes" style="margin-top: 15px;">Estoc disponible (Format: Quantitat de Longitud, o només Longitud):</label>
-        <textarea id="stockSizes" rows="4" placeholder="Exemple:&#10;10 de 600&#10;5 de 400&#10;300"></textarea>
+        <label for="stockSizes" style="margin-top: 15px;">Estoc disponible (Format: Quantitat de Longitud):<br>
+        <span style="font-weight:normal; color:#d97706; font-size: 13px;">⭐ Posa un asterisc (*) al davant per forçar-ne l'ús primer (Ex: * 1 de 250)</span></label>
+        <textarea id="stockSizes" rows="5" placeholder="Exemple:&#10;10 de 600&#10;* 1 de 250,5&#10;300"></textarea>
 
         <label for="kerf" style="margin-top: 15px;">Gruix del disc de tall / serra:</label>
         <input type="number" id="kerf" value="0.4" min="0" step="0.1">
@@ -141,21 +142,27 @@
 </div>
 
 <script>
-    // Nou extractor intel·ligent que llegeix comes com a decimals
+    // Extractor intel·ligent per processar les dades
     function extractData(line) {
         let cleanLine = line.toLowerCase().replace(/,/g, '.').trim();
         if (!cleanLine) return null;
         
-        // Cerca patrons com "5 de 120", "5x120.5", "5 - 120"
-        const match = cleanLine.match(/^(\d+)\s*(?:de|x|\-|\*)\s*(\d+(?:\.\d+)?)$/);
-        if (match) {
-            return { qty: parseInt(match[1]), len: parseFloat(match[2]) };
+        // Comprovar si hi ha asterisc de prioritat a l'inici
+        let isPriority = false;
+        if (cleanLine.startsWith('*')) {
+            isPriority = true;
+            // Retira l'asterisc inicial per seguir llegint els números netament
+            cleanLine = cleanLine.substring(1).trim();
         }
         
-        // Cerca si només és un número lliure (per a l'estoc infinit)
+        const match = cleanLine.match(/^(\d+)\s*(?:de|x|\-|\*)\s*(\d+(?:\.\d+)?)$/);
+        if (match) {
+            return { qty: parseInt(match[1]), len: parseFloat(match[2]), isPriority: isPriority };
+        }
+        
         const singleMatch = cleanLine.match(/^(\d+(?:\.\d+)?)$/);
         if (singleMatch) {
-            return { qty: Infinity, len: parseFloat(singleMatch[1]) };
+            return { qty: Infinity, len: parseFloat(singleMatch[1]), isPriority: isPriority };
         }
         
         return null;
@@ -168,21 +175,24 @@
         const demandTextInput = document.getElementById('demandText').value;
         const unit = document.getElementById('unitSelect').value;
 
-        let inventory = {};
-        let stockSizes = [];
+        // Ara l'estoc serà una llista d'objectes per poder separar els prioritaris dels normals
+        let stockList = [];
 
         const stockLines = stockSizesInput.split('\n');
         stockLines.forEach(line => {
             const data = extractData(line);
             if (data) {
-                inventory[data.len] = (inventory[data.len] || 0) + data.qty;
-                if (!stockSizes.includes(data.len)) stockSizes.push(data.len);
+                // Busquem si ja hem registrat aquesta mida amb el mateix nivell de prioritat
+                let existing = stockList.find(s => s.len === data.len && s.isPriority === data.isPriority);
+                if (existing) {
+                    existing.count += data.qty;
+                } else {
+                    stockList.push({ len: data.len, count: data.qty, isPriority: data.isPriority });
+                }
             }
         });
 
-        stockSizes.sort((a, b) => a - b);
-
-        if (stockSizes.length === 0) {
+        if (stockList.length === 0) {
             alert("Introdueix almenys una mida de barra en estoc vàlida (només números).");
             return;
         }
@@ -209,9 +219,9 @@
         for (let cutLength of demands) {
             let placed = false;
 
+            // 1. Intentar col·locar a les barres JA OBERTES
             for (let bar of usedBars) {
                 let requiredSpace = bar.cuts.length === 0 ? cutLength : cutLength + kerf;
-                // La màgia per evitar l'error de precisió dels decimals de JavaScript (+ 0.001)
                 if (bar.remainingSpace + 0.001 >= requiredSpace) {
                     bar.cuts.push(cutLength);
                     bar.remainingSpace -= requiredSpace;
@@ -220,20 +230,34 @@
                 }
             }
 
+            // 2. Si cal obrir una barra nova
             if (!placed) {
-                const suitableSize = stockSizes.find(size => size + 0.001 >= cutLength && inventory[size] > 0);
+                
+                // 2A. Buscar primer una barra PRIORITÀRIA (⭐)
+                let suitableSizes = stockList.filter(s => s.isPriority && s.count > 0 && s.len + 0.001 >= cutLength);
+                suitableSizes.sort((a, b) => a.len - b.len); // Buscar la més ajustada possible
+                let chosenStock = suitableSizes[0];
 
-                if (!suitableSize) {
+                // 2B. Si no hi ha prioritàries que serveixin, buscar barres NORMALS
+                if (!chosenStock) {
+                    suitableSizes = stockList.filter(s => !s.isPriority && s.count > 0 && s.len + 0.001 >= cutLength);
+                    suitableSizes.sort((a, b) => a.len - b.len);
+                    chosenStock = suitableSizes[0];
+                }
+
+                // 3. Error si no hi ha res disponible
+                if (!chosenStock) {
                     alert(`Error: T'has quedat sense estoc o no tens barres prou grans per encabir un tall de ${cutLength}${unit}.`);
                     return; 
                 }
 
-                inventory[suitableSize]--;
+                chosenStock.count--;
 
                 usedBars.push({
-                    totalLength: suitableSize,
-                    remainingSpace: suitableSize - cutLength,
-                    cuts: [cutLength]
+                    totalLength: chosenStock.len,
+                    remainingSpace: chosenStock.len - cutLength,
+                    cuts: [cutLength],
+                    isPriority: chosenStock.isPriority
                 });
             }
         }
@@ -251,14 +275,16 @@
         
         bars.forEach(bar => {
             const sortedCuts = [...bar.cuts].sort((a, b) => b - a);
-            const patternKey = `${bar.totalLength}_${sortedCuts.join('-')}`;
+            // Afegim la prioritat com a clau d'agrupació
+            const patternKey = `${bar.totalLength}_${bar.isPriority}_${sortedCuts.join('-')}`;
 
             if (!groupedBars[patternKey]) {
                 groupedBars[patternKey] = {
                     count: 1,
                     totalLength: bar.totalLength,
                     cuts: sortedCuts,
-                    remainingSpace: bar.remainingSpace
+                    remainingSpace: bar.remainingSpace,
+                    isPriority: bar.isPriority
                 };
             } else {
                 groupedBars[patternKey].count++;
@@ -275,9 +301,12 @@
             let totalL = unit === 'cm' ? group.totalLength.toFixed(1).replace('.', ',') : group.totalLength;
             let kerfFormat = unit === 'cm' ? kerf.toFixed(1).replace('.', ',') : kerf;
             
+            // Etiqueta visual si s'ha fet servir estoc prioritari
+            let priorityBadge = group.isPriority ? `<span class="badge" style="background:#fef08a; color:#854d0e; margin-left:10px;">⭐ Estoc Prioritari</span>` : '';
+            
             html += `
                 <div class="result-bar">
-                    <div class="badge-qty">${group.count} de Barra de ${totalL}${unit}</div><br>
+                    <div class="badge-qty">${group.count} de Barra de ${totalL}${unit}</div> ${priorityBadge}<br>
                     <span class="badge">Patró de talls:</span> ${cutsList}${unit} <br>
                     <span class="badge" style="background:#fee2e2; color:#991b1b; margin-top:5px; display:inline-block;">Residu per barra:</span> ${waste}${unit} (inclou kerf de ${kerfFormat}${unit})
                 </div>
