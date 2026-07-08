@@ -315,6 +315,23 @@
 
         resultsDiv.innerHTML = html;
     }
+
+    window.onload = function() {
+        document.getElementById("demandText").value = decodeURIComponent(GetURLParameter("llistaTalls"));
+    };
+
+    function GetURLParameter(sParam)
+    {
+        parameters = window.location.search.substring(1).split("&");
+        for (var i = 0; i < parameters.length; i++)
+        {
+            parameterName = parameters[i].split("=");
+            if (parameterName[0] == sParam)
+            {
+                return parameterName[1];
+            }
+        }
+        };
 </script>
 
 </body>
